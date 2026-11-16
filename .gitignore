@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+telemetry_opportunities.csv
+paper_portfolio.json
