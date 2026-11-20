@@ -274,9 +274,15 @@ async def handle_dashboard(request):
     return web.Response(text=html, content_type="text/html")
 
 
+async def handle_ping(request):
+    """Ultra-lightweight 4-byte ping for cron-job.org keep-alive."""
+    return web.Response(text="pong", content_type="text/plain")
+
+
 async def init_app():
     app = web.Application()
     app.router.add_get("/", handle_dashboard)
+    app.router.add_get("/ping", handle_ping)
     app.router.add_get("/api/status", handle_status_api)
     app.router.add_get("/download-telemetry", handle_download_csv)
 
