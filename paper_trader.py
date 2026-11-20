@@ -241,6 +241,96 @@ class PaperTrader:
         self.save_state()
         return trade
 
+    def execute_limit_fill(
+        self,
+        token_id: str,
+        condition_id: str,
+        question: str,
+        outcome: str,
+        side: str,
+        price: float,
+        shares: float,
+    ) -> Optional[TradeRecord]:
+        """
+        Record a passive limit order fill executed at exact quote price (0% taker slippage).
+        """
+        if side.upper() == "BUY":
+            cost = price * shares
+            if cost > self.balance:
+                return None
+            self.balance -= cost
+            if token_id in self.positions:
+                pos = self.positions[token_id]
+                new_shares = pos.shares + shares
+                new_avg = (pos.cost_basis + cost) / new_shares
+                pos.shares = new_shares
+                pos.avg_entry_price = new_avg
+                pos.current_price = price
+            else:
+                self.positions[token_id] = Position(
+                    token_id=token_id,
+                    condition_id=condition_id,
+                    question=question,
+                    outcome=outcome,
+                    shares=shares,
+                    avg_entry_price=price,
+                    current_price=price,
+                    created_at=time.time(),
+                )
+            trade = TradeRecord(
+                trade_id=f"MM-BUY-{int(time.time()*1000)}",
+                timestamp=time.time(),
+                token_id=token_id,
+                question=question,
+                outcome=outcome,
+                side="BUY",
+                shares=shares,
+                avg_price=price,
+                cost_usdc=cost,
+                slippage_pct=0.0,
+            )
+            self.trade_history.append(trade)
+            self.save_state()
+            return trade
+
+        elif side.upper() == "SELL":
+            if token_id not in self.positions:
+                return None
+            pos = self.positions[token_id]
+            shares_sold = min(shares, pos.shares)
+            proceeds = shares_sold * price
+            cost_of_sold = shares_sold * pos.avg_entry_price
+            realized = proceeds - cost_of_sold
+
+            self.balance += proceeds
+            self.total_realized_pnl += realized
+            if realized >= 0:
+                self.wins += 1
+            else:
+                self.losses += 1
+
+            pos.shares -= shares_sold
+            pos.current_price = price
+            if pos.shares <= 0.0001:
+                del self.positions[token_id]
+
+            trade = TradeRecord(
+                trade_id=f"MM-SELL-{int(time.time()*1000)}",
+                timestamp=time.time(),
+                token_id=token_id,
+                question=question,
+                outcome=outcome,
+                side="SELL",
+                shares=shares_sold,
+                avg_price=price,
+                cost_usdc=proceeds,
+                slippage_pct=0.0,
+                realized_pnl=realized,
+            )
+            self.trade_history.append(trade)
+            self.save_state()
+            return trade
+
     def update_market_prices(self, price_map: Dict[str, float]):
         """Update mark-to-market valuations for open positions."""
         for token_id, pos in self.positions.items():
