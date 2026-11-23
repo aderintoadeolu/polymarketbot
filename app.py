@@ -241,7 +241,7 @@ async def handle_dashboard(request):
     <header>
       <div>
         <h1>⚡ Polymarket Precision Market Maker</h1>
-        <p style="color: #64748b; font-size: 0.85rem; margin-top: 4px;">Avellaneda-Stoikov Inventory Skew &bull; Binance Spot Anchor &bull; Toxicity Shield</p>
+        <p style="color: #64748b; font-size: 0.85rem; margin-top: 4px;">Avellaneda-Stoikov Inventory Skew &bull; Real-Time Spot Anchor &bull; Toxicity Shield</p>
       </div>
       <div>
         <span class="badge"><span class="dot"></span> {loop_state['status']}</span>
@@ -263,7 +263,7 @@ async def handle_dashboard(request):
         <div class="card-val">{trader.wins}W / {trader.losses}L</div>
       </div>
       <div class="card">
-        <div class="card-title">Binance Spot BTC</div>
+        <div class="card-title">Spot BTC Anchor</div>
         <div class="card-val" style="color: #f59e0b;">${spot_info['btc_price']:,.2f}</div>
         <div style="font-size: 0.75rem; color: {'#ef4444' if spot_info['is_volatile'] else '#10b981'}; margin-top: 4px;">
           1m Vel: {spot_info['velocity_1m_pct']:+.2f}% &bull; {'🛡️ SHIELD' if spot_info['is_volatile'] else '🟢 NORMAL'}

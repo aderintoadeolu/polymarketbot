@@ -1,7 +1,7 @@
 """
 Spot Price Anchor & Real-Time Momentum Engine
-Connects to Binance Public WebSocket stream to detect cross-market lead-lag opportunities
-and protect Polymarket quotes from adverse selection during rapid spot market moves.
+Connects to Coinbase WebSocket stream (US-cloud compatible, zero geo-blocks)
+to detect cross-market lead-lag opportunities and protect Polymarket quotes from adverse selection.
 """
 import time
 import asyncio
@@ -12,8 +12,8 @@ import aiohttp
 
 logger = logging.getLogger("polymarket_bot.spot_anchor")
 
-BINANCE_WS_URL = "wss://stream.binance.com:9443/ws/btcusdt@ticker"
-BINANCE_REST_URL = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
+COINBASE_WS_URL = "wss://ws-feed.exchange.coinbase.com"
+COINBASE_REST_URL = "https://api.coinbase.com/v2/prices/BTC-USD/spot"
 
 
 class SpotAnchor:
@@ -28,47 +28,54 @@ class SpotAnchor:
         self._running: bool = False
 
     async def start(self):
-        """Continuously maintain WebSocket connection to Binance ticker."""
+        """Continuously maintain WebSocket connection to Coinbase ticker."""
         self._running = True
-        logger.info("Starting Binance Spot Anchor WebSocket stream...")
+        logger.info("Starting Coinbase Spot Anchor WebSocket stream...")
+
+        sub_msg = {
+            "type": "subscribe",
+            "product_ids": ["BTC-USD"],
+            "channels": ["ticker"]
+        }
 
         while self._running:
             try:
                 async with aiohttp.ClientSession() as session:
-                    async with session.ws_connect(BINANCE_WS_URL, timeout=10) as ws:
-                        self.status = "Connected (Streaming)"
-                        logger.info("Connected to Binance WebSocket stream.")
+                    async with session.ws_connect(COINBASE_WS_URL, timeout=10) as ws:
+                        await ws.send_json(sub_msg)
+                        self.status = "Streaming Live (Coinbase)"
+                        logger.info("Connected to Coinbase WebSocket stream.")
 
                         async for msg in ws:
                             if not self._running:
                                 break
                             if msg.type == aiohttp.WSMsgType.TEXT:
                                 data = msg.json()
-                                price_str = data.get("c")  # Last trade price
-                                if price_str:
-                                    self._record_price(float(price_str))
+                                if data.get("type") == "ticker" and "price" in data:
+                                    self._record_price(float(data["price"]))
                             elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                                logger.warning("Binance WS stream closed/errored. Reconnecting...")
+                                logger.warning("Coinbase WS stream closed/errored. Reconnecting...")
                                 break
             except Exception as e:
-                logger.warning(f"Binance WebSocket error: {e}. Falling back to REST...")
+                logger.warning(f"Coinbase WebSocket error: {e}. Falling back to REST...")
                 self.status = f"Reconnecting ({str(e)[:20]})"
                 await self._fallback_rest_poll()
                 await asyncio.sleep(5)
 
     async def _fallback_rest_poll(self):
-        """Fallback polling via REST if WebSocket fails."""
+        """Fallback polling via Coinbase REST API."""
         try:
+            headers = {"User-Agent": "PolymarketPrecisionBot/1.0"}
             async with aiohttp.ClientSession() as session:
-                async with session.get(BINANCE_REST_URL, timeout=5) as resp:
+                async with session.get(COINBASE_REST_URL, headers=headers, timeout=5) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        price = float(data.get("price", 0))
+                        price = float(data.get("data", {}).get("amount", 0))
                         if price > 0:
                             self._record_price(price)
                             self.status = "Connected (REST Fallback)"
         except Exception as e:
-            logger.error(f"Binance REST fallback failed: {e}")
+            logger.error(f"Coinbase REST fallback failed: {e}")
 
     def _record_price(self, price: float):
         now = time.time()
