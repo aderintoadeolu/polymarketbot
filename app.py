@@ -1,7 +1,6 @@
 """
 Polymarket Cloud Web Dashboard & Background Daemon
-Runs 24/7 on Render / Cloud.
-Includes Active Paper Market Making (Quote generation, Fill simulation, Spread capture, Adverse selection tracking).
+Precision Market Maker with Binance Real-Time Spot Anchor, Dynamic Inventory Skew, and Toxicity Shield.
 """
 import os
 import time
@@ -16,6 +15,7 @@ from orderbook import OrderBookFetcher
 from paper_trader import PaperTrader
 from strategies import ArbitrageHunter, ActiveMarketMaker
 from telemetry import TelemetryLogger
+from spot_anchor import SpotAnchor
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("cloud_bot")
@@ -30,7 +30,14 @@ fetcher = OrderBookFetcher()
 trader = PaperTrader()
 hunter = ArbitrageHunter(trader, fetcher)
 telemetry = TelemetryLogger()
-mm = ActiveMarketMaker(paper_trader=trader, min_spread_pct=4.0, quote_size_usdc=25.0, max_active_markets=5)
+spot_anchor = SpotAnchor()
+mm = ActiveMarketMaker(
+    paper_trader=trader,
+    spot_anchor=spot_anchor,
+    min_spread_pct=4.0,
+    quote_size_usdc=25.0,
+    max_active_markets=5,
+)
 
 loop_state = {
     "status": "Starting...",
@@ -44,7 +51,7 @@ loop_state = {
 
 async def background_scanner_loop():
     """Background task that runs continuously in the cloud."""
-    logger.info("Starting background Polymarket Market Maker & Telemetry loop...")
+    logger.info("Starting Precision Polymarket Market Maker & Telemetry loop...")
     loop_state["status"] = "Active"
 
     while True:
@@ -56,7 +63,7 @@ async def background_scanner_loop():
             # 1. Fetch active markets
             markets = await asyncio.to_thread(scanner.fetch_markets, limit=40, order="volume24hr")
 
-            # 2. Update Active Market Maker (Check fills, prune stale, quote new spreads)
+            # 2. Update Precision Market Maker (Checks fills, applies inventory skew, toxicity shield, places quotes)
             mm_res = await asyncio.to_thread(mm.update, markets, fetcher)
             loop_state["active_quotes"] = mm_res.get("open_count", 0)
             loop_state["total_fills"] = mm_res.get("total_fills", 0)
@@ -127,6 +134,7 @@ async def background_scanner_loop():
 async def handle_status_api(request):
     """JSON API returning current live stats."""
     stats = telemetry.get_summary_stats()
+    spot_info = spot_anchor.get_status_summary()
     return web.json_response({
         "loop_state": loop_state,
         "portfolio": {
@@ -142,6 +150,7 @@ async def handle_status_api(request):
             "active_quotes": mm.get_active_quotes_list(),
             "total_fills": len(mm.history),
         },
+        "spot_anchor": spot_info,
         "telemetry": stats,
     })
 
@@ -163,8 +172,9 @@ async def handle_ping(request):
 
 
 async def handle_dashboard(request):
-    """Render the sleek dark-mode HTML dashboard with MM Quotes & Telemetry."""
+    """Render the sleek dark-mode HTML dashboard with MM Quotes & Spot Anchor."""
     stats = telemetry.get_summary_stats()
+    spot_info = spot_anchor.get_status_summary()
     total_equity = trader.total_equity
     starting = PAPER_STARTING_BALANCE
     roi_pct = ((total_equity - starting) / starting) * 100
@@ -175,7 +185,7 @@ async def handle_dashboard(request):
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Polymarket Active Market Maker Dashboard</title>
+  <title>Polymarket Precision Market Maker</title>
   <meta http-equiv="refresh" content="15">
   <style>
     * {{ box-sizing: border-box; margin: 0; padding: 0; }}
@@ -185,7 +195,7 @@ async def handle_dashboard(request):
       color: #e2e8f0;
       padding: 20px;
     }}
-    .container {{ max-width: 1100px; margin: 0 auto; }}
+    .container {{ max-width: 1150px; margin: 0 auto; }}
     header {{
       display: flex; justify-content: space-between; align-items: center;
       padding-bottom: 20px; border-bottom: 1px solid #1e293b; margin-bottom: 24px;
@@ -198,12 +208,12 @@ async def handle_dashboard(request):
     }}
     .dot {{ width: 8px; height: 8px; background: #10b981; border-radius: 50%; animation: pulse 2s infinite; }}
     @keyframes pulse {{ 0%, 100% {{ opacity: 1; }} 50% {{ opacity: 0.3; }} }}
-    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px; }}
+    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px; margin-bottom: 24px; }}
     .card {{
-      background: #131b2e; border: 1px solid #1e293b; border-radius: 12px; padding: 18px;
+      background: #131b2e; border: 1px solid #1e293b; border-radius: 12px; padding: 16px;
     }}
-    .card-title {{ font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8; margin-bottom: 6px; }}
-    .card-val {{ font-size: 1.5rem; font-weight: 700; color: #f8fafc; }}
+    .card-title {{ font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8; margin-bottom: 6px; }}
+    .card-val {{ font-size: 1.45rem; font-weight: 700; color: #f8fafc; }}
     .positive {{ color: #10b981; }}
     .negative {{ color: #f43f5e; }}
     .btn {{
@@ -230,8 +240,8 @@ async def handle_dashboard(request):
   <div class="container">
     <header>
       <div>
-        <h1>🎯 Polymarket Active Market Maker</h1>
-        <p style="color: #64748b; font-size: 0.85rem; margin-top: 4px;">Quoting Spreads &bull; Simulating Fills &bull; Real-time PnL Tracking</p>
+        <h1>⚡ Polymarket Precision Market Maker</h1>
+        <p style="color: #64748b; font-size: 0.85rem; margin-top: 4px;">Avellaneda-Stoikov Inventory Skew &bull; Binance Spot Anchor &bull; Toxicity Shield</p>
       </div>
       <div>
         <span class="badge"><span class="dot"></span> {loop_state['status']}</span>
@@ -253,6 +263,13 @@ async def handle_dashboard(request):
         <div class="card-val">{trader.wins}W / {trader.losses}L</div>
       </div>
       <div class="card">
+        <div class="card-title">Binance Spot BTC</div>
+        <div class="card-val" style="color: #f59e0b;">${spot_info['btc_price']:,.2f}</div>
+        <div style="font-size: 0.75rem; color: {'#ef4444' if spot_info['is_volatile'] else '#10b981'}; margin-top: 4px;">
+          1m Vel: {spot_info['velocity_1m_pct']:+.2f}% &bull; {'🛡️ SHIELD' if spot_info['is_volatile'] else '🟢 NORMAL'}
+        </div>
+      </div>
+      <div class="card">
         <div class="card-title">Active Quotes</div>
         <div class="card-val" style="color: #38bdf8;">{loop_state['active_quotes']}</div>
       </div>
@@ -260,16 +277,12 @@ async def handle_dashboard(request):
         <div class="card-title">Filled Trades</div>
         <div class="card-val positive">{loop_state['total_fills']}</div>
       </div>
-      <div class="card">
-        <div class="card-title">Scanned Ticks</div>
-        <div class="card-val">{loop_state['iterations']}</div>
-      </div>
     </div>
 
     <!-- Active Quotes Table -->
     <div class="card" style="margin-bottom: 24px;">
       <div class="section-title">
-        <span>🎯 Active Limit Quotes & Fills (Market Making Simulator)</span>
+        <span>🎯 Active Limit Quotes & Fills (With Inventory Skew)</span>
         <span style="font-size: 0.8rem; color: #64748b;">Auto-updates every 15s</span>
       </div>
       <div style="overflow-x: auto;">
@@ -341,7 +354,7 @@ async def handle_dashboard(request):
     </div>
 
     <footer>
-      Polymarket Quantitative Cloud Bot &bull; Last Scan: {loop_state['last_scan_time']}
+      Polymarket Precision Cloud Bot &bull; Last Scan: {loop_state['last_scan_time']}
     </footer>
   </div>
 </body>
@@ -357,7 +370,8 @@ async def init_app():
     app.router.add_get("/api/status", handle_status_api)
     app.router.add_get("/download-telemetry", handle_download_csv)
 
-    # Start background scanner
+    # Launch background tasks
+    asyncio.create_task(spot_anchor.start())
     asyncio.create_task(background_scanner_loop())
     return app
 

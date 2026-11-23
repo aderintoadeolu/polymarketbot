@@ -142,11 +142,13 @@ class ActiveMarketMaker:
     def __init__(
         self,
         paper_trader: PaperTrader,
+        spot_anchor: Optional[Any] = None,
         min_spread_pct: float = 4.0,
         quote_size_usdc: float = 25.0,
         max_active_markets: int = 5,
     ):
         self.trader = paper_trader
+        self.spot_anchor = spot_anchor
         self.min_spread_pct = min_spread_pct
         self.quote_size_usdc = quote_size_usdc
         self.max_active_markets = max_active_markets
@@ -197,8 +199,13 @@ class ActiveMarketMaker:
                     if trade:
                         fills_count += 1
                         logger.info(f"🎯 [MM FILL - BUY] {q.question[:35]}... {q.shares} shares @ ${q.quote_price:.3f}")
-                        # Immediately post the counter-SELL quote to capture the spread!
-                        sell_price = round(max(book.best_ask - 0.01, q.quote_price + 0.01), 3)
+                        
+                        # Avellaneda-Stoikov Dynamic Inventory Skew:
+                        # If inventory is high, discount the sell price slightly to dump quickly and protect capital
+                        held_shares = self.trader.positions[q.token_id].shares if q.token_id in self.trader.positions else q.shares
+                        inv_skew = min(held_shares / 150.0, 1.0) * 0.015
+                        sell_price = round(max(book.best_ask - 0.01 - inv_skew, q.quote_price + 0.01), 3)
+                        
                         sell_qid = f"Q-SELL-{int(now*1000)}-{uuid.uuid4().hex[:4]}"
                         self.active_quotes[sell_qid] = MMQuote(
                             quote_id=sell_qid,
@@ -239,18 +246,26 @@ class ActiveMarketMaker:
         return fills_count
 
     def _prune_stale(self, fetcher: OrderBookFetcher, max_age_seconds: float = 600.0):
-        """Cancel quotes if open too long or if market moves strongly away."""
+        """Cancel quotes if open too long, if market moves strongly away, or if spot anchor signals toxicity."""
         now = time.time()
         for qid, q in list(self.active_quotes.items()):
             if q.status != "OPEN":
                 continue
 
-            # Cancel expired quotes
+            # 1. Spot Anchor / Toxicity Shield Check (Fast cross-market protection)
+            if self.spot_anchor:
+                risk = self.spot_anchor.get_market_risk_signal(q.question, q.side)
+                if risk.get("action") == "CANCEL_AND_WAIT":
+                    q.status = "CANCELLED"
+                    logger.info(f"🛡️ [TOXICITY SHIELD] Cancelled quote on '{q.question[:30]}...' | {risk.get('reason')}")
+                    continue
+
+            # 2. Cancel expired quotes
             if now - q.created_at > max_age_seconds:
                 q.status = "CANCELLED"
                 continue
 
-            # Cancel if price drifts > 6% away (adverse selection safety)
+            # 3. Cancel if price drifts > 6% away (adverse selection safety)
             book = fetcher.fetch_order_book(q.token_id)
             if book and book.midpoint:
                 drift = abs(book.midpoint - q.quote_price) / q.quote_price
@@ -274,6 +289,16 @@ class ActiveMarketMaker:
             token_id = m.clob_token_ids[0]
             if token_id in open_tokens:
                 continue
+
+            # Inventory Check: Don't buy more if we are already holding an open long position!
+            if token_id in self.trader.positions and self.trader.positions[token_id].shares > 0:
+                continue
+
+            # Spot Anchor Volatility Shield: Skip crypto contracts during BTC momentum spikes
+            if self.spot_anchor and self.spot_anchor.is_volatile:
+                q_low = m.question.lower()
+                if "bitcoin" in q_low or "btc" in q_low:
+                    continue
 
             book = fetcher.fetch_order_book(token_id)
             if not book or not book.best_bid or not book.best_ask or not book.spread_pct:
